@@ -8,7 +8,7 @@
 #include <sys/shm.h>
 #include <time.h>
  
-#define SIZE 3
+#define SIZE 10
 #define NUMB_THREADS 6
 #define PRODUCER_LOOPS 2
 #define SHMSZ 1000
@@ -21,7 +21,9 @@ CMSC312 - ASSIGNMENT 3
 
 typedef struct{
     char print[100];
-    int num;
+    int print_size;
+    int thread_num;
+    int printID;    
 } print_req;
 
 int shmid;
@@ -30,10 +32,12 @@ key_t key = 5112;
 
 int buffer_index;
 pthread_mutex_t buffer_mutex;
+int job_count;
 
-/************************
-Correct Implementation
-************************/
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//SEMAPHORE IMPLEMENTATION
 
 //counting sem structure
 struct counting_sem {
@@ -83,89 +87,97 @@ void destroy_c_sem(struct counting_sem *ptr) {
     sem_destroy(&ptr->gate);
 }
 
-/************************/
- 
-void insertbuffer(print_req *req_ptr, int thread_numb) {
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+void insertbuffer(print_req *print_req_ptr) {
     if (buffer_index < SIZE) {
-        shm_buffer[buffer_index++] = *req_ptr;
-        printf("Buffer Index = %d\n", buffer_index);
-        //PRINT STATEMENT MOVED TO CRITICAL SECTION FOR EASIER ANALYSIS
-        printf("Producer %d added %d to buffer\n", thread_numb, req_ptr->num);
+        printf("\nPROD %d: -- Insert: %d.%d at index: %d  Size: %d\n", print_req_ptr->thread_num, print_req_ptr->thread_num,print_req_ptr->printID, buffer_index, print_req_ptr->print_size);
+        shm_buffer[buffer_index] = *print_req_ptr;
+        buffer_index++;
     } else {
         printf("Buffer overflow\n");
     }    
 }
  
 void dequeuebuffer(int thread_numb) {
+    if (job_count < 0) return;
     if (buffer_index > 0) { 
         --buffer_index;
-        printf("Buffer Index = %d\n", buffer_index);
-        //PRINT STATEMENT MOVED TO CRITICAL SECTION FOR EASIER ANALYSIS
-        printf("Consumer %d dequeue %d from buffer\n", thread_numb, shm_buffer[buffer_index].num);        
+        print_req process_print = shm_buffer[buffer_index];
+        printf("\nCONS %d: -- \t\t\tPrint job size %d\n",thread_numb, shm_buffer[buffer_index].print_size);
+        sleep(1/10);//(sleep will be proportional to process_print.print_size);        
+        printf("CONS %d: -- \t\t\tDequeue: index: %d  ID: %d.%d  Size: %d\n\n", thread_numb, buffer_index, process_print.thread_num, process_print.printID, process_print.print_size);           
     } else {
         printf("Buffer underflow\n");
     }
 }
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
  
 void *producer(void *thread_n) {
     int thread_numb = *(int *)thread_n;
     int i = 0;
-
-    while (i++ < PRODUCER_LOOPS) {
-        int value = rand() % 101;
-        print_req request = {"10", value};
+    int rand_loops = rand() % 31;
+    int print_num = 0;
+    printf("\n**** NEW PROD THREAD %d :: LOOPS %d****\n", thread_numb, rand_loops);
+    while (i++ < rand_loops) {
+        int rand_size = rand() % 101;
+        print_req request = {"10", rand_size, thread_numb, print_num};        
         print_req *ptr = &request;
-        sleep(rand() % 10); 
-            
-/************************/
-       wait_c_sem(&full); //WAIT CALL TO COUNTING_SEM FULL
-/************************/
-
+        print_num++;
+        wait_c_sem(&full); //WAIT CALL TO COUNTING_SEM FULL
         pthread_mutex_lock(&buffer_mutex); /* protecting critical section */
-        insertbuffer(ptr, thread_numb);
+        job_count++;
+        insertbuffer(ptr);        
         pthread_mutex_unlock(&buffer_mutex);
-           
-/************************/
-        post_c_sem(&empty); //POST CALL TO COUNTING_SEM EMPTY
-/************************/
- 
-    }
+        post_c_sem(&empty); //POST CALL TO COUNTING_SEM EMPTY 
+    }    
     pthread_exit(0);
 }
  
 void *consumer(void *thread_n) {
     int thread_numb = *(int *)thread_n;
-    int i=0;
-    while (i++ < PRODUCER_LOOPS) {
+    int i = 0;
+    sleep(1); //Prevents consumers exiting before processing any jobs
+    while (1) {
+        //If there are no more jobs, call sempost one last time to allow any waiting printers to exit. 
+        if (job_count < 1) {  
+            post_c_sem(&empty);
+            break;
+        }  
+        printf("\nCons %d ENTER LOOPS\n", thread_numb);
         sleep(rand() % 4); //SLEEPS ADDED
-/************************/
         wait_c_sem(&empty); //WAIT CALL TO COUNTING_SEM EMPTY
-/************************/
-
         pthread_mutex_lock(&buffer_mutex);
+        job_count--;       
+        printf("\nJob Count = %d\n", job_count);
         dequeuebuffer(thread_numb);
         pthread_mutex_unlock(&buffer_mutex);
-                
-/************************/
-        post_c_sem(&full); //POST CALL TO COUNTING_SEM FULL
-/************************/
-      
+        post_c_sem(&full); //POST CALL TO COUNTING_SEM FULL      
     }
+    printf("Cons %d EXIT\n", thread_numb);
     pthread_exit(0);
 }
  
 int main(int argc, int **argv) {
 
-    buffer_index = 0; 
-    pthread_mutex_init(&buffer_mutex, NULL);
-    int struct_arr_size = sizeof(struct print_req *) * SZ;
-    
-/************************/
+    buffer_index = 0;     
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+ 
     init_c_sem(&full, SIZE); //INITIALIZED COUNTING_SEM FULL TO BUFFER SIZE
     init_c_sem(&empty, 0);   //INITIALIZED COUNTING_SEM EMPTY TO 0
-/************************/  
 
-//SETTING UP SHARED MEMORY FOR BUFFER    
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+//BUFFER    
+
+    int struct_arr_size = sizeof(struct print_req *) * SZ;
+
     // Create Shared Buffer
     if( (shmid = shmget(key, struct_arr_size, IPC_CREAT | 0600)) < 0 )
     {
@@ -180,6 +192,15 @@ int main(int argc, int **argv) {
         exit(1);
     }
 
+
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+  
+//THREADS
+
+    pthread_mutex_init(&buffer_mutex, NULL);
+    
     pthread_t thread[NUMB_THREADS];
     int thread_numb[NUMB_THREADS];
     int i;
@@ -198,16 +219,19 @@ int main(int argc, int **argv) {
                        &thread_numb[i]);  // void *arg
         i++;
     }
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
  
+//CLEANUP 
+
     for (i = 0; i < NUMB_THREADS; i++)
         pthread_join(thread[i], NULL);
 
     pthread_mutex_destroy(&buffer_mutex);
 
-/************************/
     destroy_c_sem(&empty); //DESTROY SEMS
     destroy_c_sem(&full);
-/************************/   
 
     if (shmdt(shm_buffer) == -1){
             fprintf(stderr, "Unable to detach\n");
