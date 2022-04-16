@@ -19,6 +19,7 @@ EVA CURRY
 CMSC312 - ASSIGNMENT 3
 */
 
+//DEFINE PRINT REQUEST
 typedef struct{
     char print[100];
     int print_size;
@@ -26,10 +27,9 @@ typedef struct{
     int printID;    
 } print_req;
 
-int shmid;
-print_req *shm_buffer;
-key_t key = 5112;
 
+
+//THREAD COMMUNICATION
 int buffer_index;
 pthread_mutex_t buffer_mutex;
 int job_count;
@@ -45,9 +45,20 @@ int val;
 sem_t gate;
 sem_t mutex;
 };
+int shmid_buff;
+int shmid_semfull;
+int shmid_semempty;
+struct counting_sem *shm_semfull; //typedef later
+struct counting_sem *shm_semempty;
+print_req *shm_buffer;
+key_t buff_key = 5112;
+key_t full_key = 5113;
+key_t empty_key = 5114;
+int buffer_max = sizeof(struct print_req *) * SZ;
+int sem_size = sizeof(struct counting_sem *);
 
-struct counting_sem empty;
-struct counting_sem full;
+// struct counting_sem empty;
+// struct counting_sem full;
 
 int min(int a, int b){
     return (a>b)?b:a;
@@ -127,12 +138,12 @@ void *producer(void *thread_n) {
         print_req request = {"10", rand_size, thread_numb, print_num};        
         print_req *ptr = &request;
         print_num++;
-        wait_c_sem(&full); //WAIT CALL TO COUNTING_SEM FULL
+        wait_c_sem(shm_semfull); //WAIT CALL TO COUNTING_SEM FULL
         pthread_mutex_lock(&buffer_mutex); /* protecting critical section */
         job_count++;
         insertbuffer(ptr);        
         pthread_mutex_unlock(&buffer_mutex);
-        post_c_sem(&empty); //POST CALL TO COUNTING_SEM EMPTY 
+        post_c_sem(shm_semempty); //POST CALL TO COUNTING_SEM EMPTY 
     }    
     pthread_exit(0);
 }
@@ -144,18 +155,18 @@ void *consumer(void *thread_n) {
     while (1) {
         //If there are no more jobs, call sempost one last time to allow any waiting printers to exit. 
         if (job_count < 1) {  
-            post_c_sem(&empty);
+            post_c_sem(shm_semempty);
             break;
         }  
         printf("\nCons %d ENTER LOOPS\n", thread_numb);
         sleep(rand() % 4); //SLEEPS ADDED
-        wait_c_sem(&empty); //WAIT CALL TO COUNTING_SEM EMPTY
+        wait_c_sem(shm_semempty); //WAIT CALL TO COUNTING_SEM EMPTY
         pthread_mutex_lock(&buffer_mutex);
         job_count--;       
         printf("\nJob Count = %d\n", job_count);
         dequeuebuffer(thread_numb);
         pthread_mutex_unlock(&buffer_mutex);
-        post_c_sem(&full); //POST CALL TO COUNTING_SEM FULL      
+        post_c_sem(shm_semfull); //POST CALL TO COUNTING_SEM FULL      
     }
     printf("Cons %d EXIT\n", thread_numb);
     pthread_exit(0);
@@ -165,38 +176,61 @@ int main(int argc, int **argv) {
 
     buffer_index = 0;     
 
-//////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////
- 
-    init_c_sem(&full, SIZE); //INITIALIZED COUNTING_SEM FULL TO BUFFER SIZE
-    init_c_sem(&empty, 0);   //INITIALIZED COUNTING_SEM EMPTY TO 0
-
-//////////////////////////////////////////////////////////////////////////////
-//////////////////////////////////////////////////////////////////////////////
+    // int shmid_buff;
+    // int shmid_semfull;
+    // int shmid_semempty;
+    // struct counting_sem *shm_semfull; //typedef later
+    // struct counting_sem *shm_semempty;
+    // print_req *shm_buffer;
+    // key_t buff_key = 5112;
+    // key_t full_key = 5113;
+    // key_t empty_key = 5114;
+    // int buffer_max = sizeof(struct print_req *) * SZ;
+    // int sem_size = sizeof(struct counting_sem *);
 
 //BUFFER    
-
-    int struct_arr_size = sizeof(struct print_req *) * SZ;
-
     // Create Shared Buffer
-    if( (shmid = shmget(key, struct_arr_size, IPC_CREAT | 0600)) < 0 )
-    {
+    if( (shmid_buff = shmget(buff_key, buffer_max, IPC_CREAT | 0600)) < 0 ){
         perror("shmget");
         exit(1);
     }
-
     // Attach to Shared Buffer 
-    if( (shm_buffer = (print_req*)shmat(shmid, (void*) 0, 0)) == (void*) -1 )
-    {
+    if( (shm_buffer = (print_req*)shmat(shmid_buff, (void*) 0, 0)) == (void*) -1 ){
+        perror("shmat");
+        exit(1);
+    }
+//SEM FULL
+    // Create Shared Buffer
+    if( (shmid_semfull = shmget(full_key, sem_size, IPC_CREAT | 0600)) < 0 ){
+        perror("shmget");
+        exit(1);
+    }
+    // Attach to Shared Buffer 
+    if( (shm_semfull = (struct counting_sem*)shmat(shmid_semfull, (void*) 0, 0)) == (void*) -1 ){
+        perror("shmat");
+        exit(1);
+    }
+//SEM EMPTY
+    // Create Shared Buffer
+    if( (shmid_semempty = shmget(empty_key, sem_size, IPC_CREAT | 0600)) < 0 ){
+        perror("shmget");
+        exit(1);
+    }
+    // Attach to Shared Buffer 
+    if( (shm_semempty = (struct counting_sem*)shmat(shmid_semempty, (void*) 0, 0)) == (void*) -1 ){
         perror("shmat");
         exit(1);
     }
 
-
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+ 
+    init_c_sem(shm_semfull, SIZE); //INITIALIZED COUNTING_SEM FULL TO BUFFER SIZE
+    init_c_sem(shm_semempty, 0);   //INITIALIZED COUNTING_SEM EMPTY TO 0
 
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
-  
+ 
 //THREADS
 
     pthread_mutex_init(&buffer_mutex, NULL);
@@ -223,6 +257,17 @@ int main(int argc, int **argv) {
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
  
+//PROCESSES
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+
 //CLEANUP 
 
     for (i = 0; i < NUMB_THREADS; i++)
@@ -230,8 +275,8 @@ int main(int argc, int **argv) {
 
     pthread_mutex_destroy(&buffer_mutex);
 
-    destroy_c_sem(&empty); //DESTROY SEMS
-    destroy_c_sem(&full);
+    destroy_c_sem(shm_semempty); //DESTROY SEMS
+    destroy_c_sem(shm_semfull);
 
     if (shmdt(shm_buffer) == -1){
             fprintf(stderr, "Unable to detach\n");
